@@ -7,6 +7,7 @@ import sys
 import pandas as pd
 import pymysql
 import functools
+
 reload(sys)
 sys.setdefaultencoding('utf8')
 
@@ -39,7 +40,7 @@ def try_catch(func):
     def inner(*args, **kwargs):
         name = kwargs.get("name")
         try:
-            logger.info(u"%s开始" % name)
+            logger.info(u"%s..." % name)
             ret = func(*args, **kwargs)
             logger.info(u"%s结束" % name)
             return ret
@@ -137,7 +138,7 @@ def row_denormaliser(value_lists, name):
         key = lst[0]
         tag = lst[2]
         # tagValue合法性
-        re_rule = r"G\d{1,2}|S\d{1,2}|C\d{1,2}|R\d{1,2}|L\d{1,2}|Z\d{1,2}|X\d{1,2}|BENM\d{1,2}|MASK\d{1,2}|N\d{1,2}"
+        re_rule = r"G\d|S\d|C\d{1,2}|R\d|L\d{1,2}|Z\d{1,2}|X\d{1,2}|BENM\d|MASK\d|N\d{1,2}"
 
         if re.match(re_rule, tag):
             if key not in res:
@@ -150,7 +151,6 @@ def row_denormaliser(value_lists, name):
     for pid in res:
         line = [pid]
         line.extend(res[pid]["score"])
-        # line.extend(res[pid]["tag_value"])
         ret.append(line)
         if not colIndex:
             colIndex = ['people_id'] + res[pid]["tag_value"]
@@ -167,13 +167,15 @@ def line3(conn, pro_id, sur_id, t_id, *args):
     column_index_at, answer_tuples = get_answer(conn, pro_id, sur_id, name=u"数据库查询问卷答案")
 
     column_index_mj2, merge_join_2 = merge(answer_tuples, people_id_tuples, column_index_at, column_index_pit,
-                         how='left', on=['people_id'], )
+                                           how='left', on=['people_id'], name='merge_join_2')
 
     # Sort rows 4 3
     merge_join_2.sort(key=lambda x: x[1])
     column_index_qt, question_tag_tuples = question_tag(admin_conn, t_id, name=u"数据库查询题目编号")
-    column_index_mj, merge_join= merge(merge_join_2, question_tag_tuples, column_index_mj2, column_index_qt,
-                      left_on=['question_id'], right_on=['object_id'], del_column=['question_id', 'object_id'])
+    column_index_mj, merge_join = merge(merge_join_2, question_tag_tuples, column_index_mj2, column_index_qt,
+                                        left_on=['question_id'], right_on=['object_id'],
+                                        del_column=['question_id', 'object_id'],
+                                        name='merge_join')
     # Select values
     select_value = merge_join
     column_index_sv = ['people_id', 'answer_score', 'tag_value']
@@ -273,7 +275,9 @@ def del_repeat(arg):
     return res
 
 
-def merge(left, right, lindex, rindex, how='inner', on=None, left_on=None, right_on=None, del_column=None, axis=1):
+@try_catch
+def merge(left, right, lindex, rindex, how='inner', on=None, left_on=None, right_on=None, del_column=None, axis=1,
+          **kwargs):
     # 转DataFrame对象，设置列索引
     if not isinstance(left, list):
         left = list(left)
@@ -309,7 +313,8 @@ def line1(conn, aid):
     # 组织人员关系  *******************
     column_index_pr, people_relation = people_relationship(conn, name=u"组织人员关系")
     # Merge Join 3 2  ***************
-    column_index_mj_32, merge_join_32 = merge(select_values_3, people_relation, lindex=column_index_sv3, rindex=column_index_pr, on=["people_id"])
+    column_index_mj_32, merge_join_32 = merge(select_values_3, people_relation, lindex=column_index_sv3,
+                                              rindex=column_index_pr, on=["people_id"], name='merge_join_32')
     # sort
     merge_join_32.sort(key=lambda x: (x[-1], x[0]))
     return column_index_mj_32, merge_join_32
@@ -344,7 +349,6 @@ def split_field_2(orgs, name):
 def line2(conn, aid):  # [org1,org2,...org9, org_code]
     column_index_orgs, orgs = list_org(conn, aid, name=u"机构一览表")
     split_field = split_field_2(orgs, name="split field 2")
-    # column_index_orgs = ('orgname', 'org_code'), 转换方式固定
     orgs_index = [u'一级机构',
                   u'二级机构',
                   u'三级机构',
@@ -361,8 +365,6 @@ def line2(conn, aid):  # [org1,org2,...org9, org_code]
 
 
 # ***************人员列表2 答题时间************
-# 人员列表2 同 人员列表
-
 # Select values 4 2
 @try_catch
 def select_value_4_2(arg, length, name):
@@ -406,16 +408,13 @@ def index_colum(col_index, tag_list):
 
 
 # 根据tag组计算分数--算一个组的
-# person_score_list  selectValue_4222的一个元素
-# fields G1+G2
 def compute_tag_group(person_score_list, col_index, fields, multiple):
-    # person_list = list(set(person_list))
     field = fields.split("+")
     index_list = index_colum(col_index, field)
     score = 0
 
     for ind in index_list:
-        if ind != None:
+        if ind is not None:
             try:
                 score += person_score_list[ind]
             except TypeError:
@@ -508,13 +507,14 @@ def statistics(score):
         statistic[i] = round(statistic[i] // len(res[i]), 2)
     statistic[u"幸福维度总分"] = round((statistic[u"工作投入"] + statistic[u"生活愉悦"] + statistic[u"成长有力"] +
                                   statistic[u"人际和谐"] + statistic[u"领导激发"] + statistic[u"组织卓越"]) // 6, 2)
-    statistic[u"幸福总分"] = statistic[u"幸福维度总分"] * 0.8 + statistic[u"个人幸福能力"] * 0.2
+    statistic[u"幸福总分"] = round(statistic[u"幸福维度总分"] * 0.8 + statistic[u"个人幸福能力"] * 0.2, 2)
 
     return statistic
 
 
 # 计算所有分数
-def compute_all(all_score, col_index):
+@try_catch
+def compute_all(all_score, col_index, **kwargs):
     res = []
     for person_score_list in all_score:
         personal_res = {}
@@ -526,6 +526,8 @@ def compute_all(all_score, col_index):
         personal_res["statistics"] = statistic
 
         res.append(personal_res)
+
+        # 写入数据库
 
     return res
 
@@ -550,7 +552,7 @@ def main(AssessID, SurveyID):
     column_index_sr2, sort_rows_2 = line2(sql_conn, assess_id)
 
     column_index_mj3, merge_join_3 = merge(sort_rows_3, sort_rows_2, column_index_sr3, column_index_sr2,
-                         how='left', on='org_code', del_column="org_code")
+                                           how='left', on='org_code', del_column="org_code", name='merge_join_3')
     # Select values 2
     sort_select_values_2 = merge_join_3
     column_index_mj3[column_index_mj3.index('username')] = u'姓名'
@@ -559,13 +561,12 @@ def main(AssessID, SurveyID):
     column_index_l3, sort_rows_4 = line3(front_conn, project_id, survey_id, tag_id, sql_conn)
     u'''Merge Join 3 3'''
     column_index_mj33, merge_join_3_3 = merge(sort_select_values_2, sort_rows_4, column_index_mj3, column_index_l3,
-                                              how='left', on=["people_id"])
+                                              how='left', on=["people_id"], name='merge_join_3_3')
     json.dump(column_index_mj33, open('column_index_mj33.json', 'w'), ensure_ascii=False)
     # Select values 4 2
     json.dump(merge_join_3_3, open('merge_join_3_3.json', 'w'), ensure_ascii=False)
-    result = compute_all(merge_join_3_3, column_index_mj33)
+    result = compute_all(merge_join_3_3, column_index_mj33, name=u'计算各项维度分')
     json.dump(result, open("result.json", "w"), ensure_ascii=False)
-
     sql_conn.close()
 
 
